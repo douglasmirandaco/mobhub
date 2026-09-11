@@ -1,0 +1,119 @@
+// Prisma schema — MHZ MOB / Sistema de Geração de Contratos
+// Banco recomendado em produção: PostgreSQL (Supabase, Neon, Railway, RDS...)
+// Para rodar localmente sem infra, troque provider para "sqlite" e DATABASE_URL="file:./dev.db"
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN   // gerencia usuários, templates (clausulado) e todos os contratos
+  EDITOR  // preenche formulários e gera contratos/PDFs
+  VIEWER  // apenas consulta contratos já gerados
+}
+
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  passwordHash  String
+  role          Role     @default(EDITOR)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  contracts     Contract[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+// Um Template representa um MODELO de contrato (ex: "Compra, Venda e Instalação",
+// "Gestão de Eletropostos"). O time pode editar o clausulado e os campos sem mexer em código.
+model Template {
+  id          String   @id @default(cuid())
+  slug        String   @unique // ex: "venda-eletroposto"
+  name        String
+  description String?
+  version     Int      @default(1)
+  isActive    Boolean  @default(true)
+
+  // Schema dos campos do formulário (JSON — ver src/types/template.ts -> FieldDef[])
+  fieldSchema Json
+
+  // Corpo do contrato: array de cláusulas com placeholders {{campo}} (ver src/types/template.ts -> Clause[])
+  clauses     Json
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  contracts   Contract[]
+
+  @@map("templates")
+}
+
+enum ContractStatus {
+  DRAFT
+  GENERATED
+  ARCHIVED
+}
+
+model Contract {
+  id          String         @id @default(cuid())
+  templateId  String
+  template    Template       @relation(fields: [templateId], references: [id])
+
+  createdById String
+  createdBy   User           @relation(fields: [createdById], references: [id])
+
+  title       String         // rótulo interno, ex: "Contrato 014/2026 - João Silva"
+  status      ContractStatus @default(DRAFT)
+
+  // Dados preenchidos do formulário, CRIPTOGRAFADOS em repouso (AES-256-GCM) — ver src/lib/crypto.ts
+  // Guardamos como string (payload cifrado), nunca em texto plano.
+  encryptedData String
+
+  pdfGeneratedAt DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  auditLogs   AuditLog[]
+
+  @@map("contracts")
+}
+
+enum AuditAction {
+  LOGIN
+  LOGIN_FAILED
+  CONTRACT_CREATE
+  CONTRACT_UPDATE
+  CONTRACT_VIEW
+  CONTRACT_PDF_EXPORT
+  CONTRACT_DELETE
+  TEMPLATE_UPDATE
+  DATA_EXPORT_REQUEST   // atendimento a titular (LGPD art. 18)
+  DATA_DELETE_REQUEST   // atendimento a titular (LGPD art. 18)
+}
+
+// Trilha de auditoria exigida por boas práticas de LGPD (art. 37) — quem acessou/gerou o quê e quando.
+model AuditLog {
+  id         String       @id @default(cuid())
+  action     AuditAction
+  userId     String?
+  user       User?        @relation(fields: [userId], references: [id])
+  contractId String?
+  contract   Contract?    @relation(fields: [contractId], references: [id])
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime     @default(now())
+
+  @@map("audit_logs")
+  @@index([contractId])
+  @@index([userId])
+}
